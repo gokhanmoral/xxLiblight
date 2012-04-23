@@ -36,7 +36,6 @@
 /******************************************************************************/
 
 /* LED NOTIFICATIONS BACKLIGHT */
-#define ENABLE_BL		1
 #define DISABLE_BL		0
 #define DISABLE_BL_CM		2
 
@@ -46,9 +45,10 @@
 static pthread_once_t g_init = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_enable_touchlight = -1;
-int notification_file;
-int disable_bl;
-int disable_keylight;
+static char* notification_file;
+static int romtype = 0;
+static int disable_bl;
+static int disable_keylight;
 
 char const*const PANEL_FILE
         = "/sys/class/backlight/panel/brightness";
@@ -65,10 +65,46 @@ char const *const NOTIFICATION_FILE_BLN
 char const *const NOTIFICATION_FILE_CM
 	= "/sys/class/misc/notification/led";
 
+void
+load_module_type()
+{
+  char chrromtype = '0';
+  FILE* fp = fopen("/proc/sys/kernel/rom_feature_set", "r");
+  if (fp) {
+    fread(&chrromtype,1,1,fp);
+    fclose(fp);
+    //this part is for siyah kernel
+    romtype=chrromtype-48;
+    notification_file = NOTIFICATION_FILE_BLN;
+    disable_bl = DISABLE_BL;
+    if(romtype == 0) disable_keylight = DISABLE_KEYLIGHT;
+    else disable_keylight = DISABLE_KEYLIGHT_CM;
+    return;
+  } 
+  fp = fopen("/system/framework/framework2.jar", "r");
+  if(fp)
+  {
+    fclose(fp);
+    //samsung rom
+    romtype=0;
+    notification_file = NOTIFICATION_FILE_BLN;
+    disable_bl = DISABLE_BL;
+    disable_keylight = DISABLE_KEYLIGHT;
+  }
+  else
+  {
+    romtype=1;
+    notification_file = NOTIFICATION_FILE_CM;
+    disable_bl = DISABLE_BL_CM;
+    disable_keylight = DISABLE_KEYLIGHT_CM;
+  }
+}
+
 void init_globals(void)
 {
     // init the mutex
     pthread_mutex_init(&g_lock, NULL);
+    load_module_type();
 }
 
 void
@@ -88,21 +124,6 @@ load_settings()
     }
 }
 
-void
-load_module_type()
-{
-    FILE* fp = fopen(NOTIFICATION_FILE_BLN, "r");
-    if (fp) {
-	notification_file = NOTIFICATION_FILE_BLN;
-	disable_bl = DISABLE_BL;
-	disable_keylight = DISABLE_KEYLIGHT;
-	fclose(fp);
-    } else {
-        notification_file = NOTIFICATION_FILE_CM;
-	disable_bl = DISABLE_BL_CM;
-	disable_keylight = DISABLE_KEYLIGHT_CM;
-    }
-}
 
 static int
 write_int(char const* path, int value)
@@ -151,7 +172,7 @@ set_light_backlight(struct light_device_t* dev,
 
     pthread_mutex_lock(&g_lock);
     err = write_int(PANEL_FILE, brightness);
-	if(notification_file==NOTIFICATION_FILE_CM)
+    if(romtype>0)
     if (g_enable_touchlight == -1 || g_enable_touchlight > 0)
         err = write_int(BUTTON_FILE, brightness > 0 ? 1 : 0);
 
@@ -191,25 +212,14 @@ set_light_battery(struct light_device_t* dev,
 
 static int
 set_light_notification(struct light_device_t* dev,
-	struct light_state_t const* state)
+        struct light_state_t const* state)
 {
-    load_module_type();
+    pthread_mutex_lock(&g_lock);
+    /* for BLN */
+    int on = is_lit(state);
+    int err = write_int( notification_file, on?1:disable_bl );
 
-    int err = 0;
-    int brightness = rgb_to_brightness(state);
-        
-    if (brightness+state->color == 0 || brightness > 100 ) {
-    	pthread_mutex_lock(&g_lock);
-
-    	if (state->color & 0x00ffffff) {
-    		LOGV("[LED Notify] set_light_notifications - ENABLE_BL\n");
-            	err = write_int (notification_file, ENABLE_BL);
-    	} else {
-    		LOGV("[LED Notify] set_light_notifications - DISABLE_BL\n");
-    		err = write_int (notification_file, disable_bl);
-    	}
-        pthread_mutex_unlock(&g_lock);
-    }
+    pthread_mutex_unlock(&g_lock);
 
     return 0;
 }
@@ -286,6 +296,6 @@ const struct hw_module_t HAL_MODULE_INFO_SYM = {
     .version_minor = 0,
     .id = LIGHTS_HARDWARE_MODULE_ID,
     .name = "Samsung Exynos4210 Lights Module",
-    .author = "The CyanogenMod Project, Fluxi",
+    .author = "The CyanogenMod Project, Fluxi, gm",
     .methods = &lights_module_methods,
 };
